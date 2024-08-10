@@ -90,7 +90,7 @@ def summarize_text(client, model_name, text, encoding=None):
         messages = [
             {
                 "role": "system",
-                "content": "You are a master summarizer that can provide clear and concise summaries."
+                "content": "You are a professional summarizer who can create a concise and comprehensive summary of any provided text, be it an article, post, conversation, or passage, while adhering to these guidelines: Craft a summary that is detailed, thorough, in-depth, and complex, while maintaining clarity and conciseness. Incorporate main ideas and essential information, eliminating extraneous language and focusing on critical aspects. Rely strictly on the provided text, without including external information. Format the summary in paragraph form for easy understanding."
             },
             {
                 "role": "user",
@@ -117,10 +117,19 @@ def summarize_text(client, model_name, text, encoding=None):
 def save_corrected_transcript(output_file_path, corrected_text):
     try:
         with open(output_file_path, 'a') as file:  # Open file in append mode
-            file.write(corrected_text)
+            # Process the text to add new lines for Markdown display
+            processed_text = post_process_transcript(corrected_text)
+            file.write(processed_text)
     except Exception as e:
         print(f"Error saving corrected transcript: {e}")
         sys.exit(1)
+
+def post_process_transcript(text):
+    """Adds a new line after each line of dialogue for Markdown display."""
+    lines = text.splitlines()
+    processed_lines = [line + "\n" for line in lines]  # Add a blank line after each line
+    processed_lines.append("")
+    return "\n".join(processed_lines)
 
 def main(json_file_path, model_name):
     api_key = os.getenv("OPENAI_API_KEY")
@@ -140,7 +149,7 @@ def main(json_file_path, model_name):
 
     encoding = tiktoken.encoding_for_model("gpt-4")
     max_tokens = 1000
-    overlap = 0  # Adjust overlap as needed
+    overlap = 200  # Adjust overlap as needed
 
     print("Chunking transcript text...")
     start_time = time.time()
