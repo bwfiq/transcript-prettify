@@ -1,46 +1,40 @@
 import json
 import os
 import sys
-import logging
 import time
 import tiktoken
 from openai import OpenAI
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
 def load_transcript_from_json(json_file_path):
-    """Load transcript text from a JSON file."""
-    start_time = time.time()
-    logging.info(f"Loading transcript from JSON file: {json_file_path}")
     try:
         with open(json_file_path, 'r') as file:
             data = json.load(file)
     except Exception as e:
-        logging.error(f"Failed to load JSON file: {e}")
+        print(f"Error loading JSON file: {e}")
         sys.exit(1)
-    
-    # Concatenate all text from the transcript
     transcript_text = " ".join([chunk["text"] for chunk in data["chunks"]])
-    elapsed_time = time.time() - start_time
-    logging.info(f"Transcript loaded and concatenated in {elapsed_time:.2f} seconds.")
     return transcript_text
 
-def chunk_text(transcript_text, max_tokens, encoding):
-    """Chunk the transcript text to ensure it does not exceed max tokens."""
+def chunk_text(transcript_text, max_tokens, encoding, overlap=50):
     tokens = encoding.encode(transcript_text)
-    chunks = [tokens[i:i + max_tokens] for i in range(0, len(tokens), max_tokens)]
-    return [encoding.decode(chunk) for chunk in chunks]
+    chunks = []
+    start = 0
 
-def generate_corrected_transcript(client, temperature, system_prompt, transcript_text, context=""):
-    """Generate corrected transcript using OpenAI API."""
-    start_time = time.time()
-    logging.info("Generating corrected transcript using OpenAI API...")
+    while start < len(tokens):
+        end = start + max_tokens
+        chunk = tokens[start:end]
+        chunks.append(encoding.decode(chunk))
+        
+        start += max_tokens - overlap  # Shift start to allow overlap
+
+    return chunks
+
+def generate_corrected_transcript(client, transcript_text, context=""):
     try:
         messages = [
             {
                 "role": "system",
-                "content": system_prompt
+                "content": "You are a helpful assistant. Your task is to correct formatting and spelling discrepancies in the transcribed text. Start each line of dialogue on a new line with a timestamp. Only add necessary punctuation such as periods, commas, and capitalization, and use only the context provided."
             }
         ]
         if context:
@@ -54,30 +48,25 @@ def generate_corrected_transcript(client, temperature, system_prompt, transcript
         })
         
         response = client.chat.completions.create(
-            model="gpt-4o",  # Use the appropriate model
-            temperature=temperature,
+            model="gpt-4o",
+            temperature=0.2,
             messages=messages
         )
-        elapsed_time = time.time() - start_time
-        logging.info(f"Corrected transcript generated successfully in {elapsed_time:.2f} seconds.")
     except Exception as e:
-        logging.error(f"Failed to generate corrected transcript: {e}")
+        print(f"Error generating corrected transcript: {e}")
         sys.exit(1)
 
     return response.choices[0].message.content
 
-def summarize_text(client, temperature, system_prompt, text):
-    """Summarize text using OpenAI API."""
-    start_time = time.time()
-    logging.info("Summarizing text using OpenAI API...")
+def summarize_text(client, text):
     try:
         response = client.chat.completions.create(
-            model="gpt-4o",  # Use the appropriate model
-            temperature=temperature,
+            model="gpt-4o",
+            temperature=0.2,
             messages=[
                 {
                     "role": "system",
-                    "content": system_prompt
+                    "content": "You are a master summarizer that can provide clear and concise summaries."
                 },
                 {
                     "role": "user",
@@ -85,97 +74,81 @@ def summarize_text(client, temperature, system_prompt, text):
                 }
             ]
         )
-        elapsed_time = time.time() - start_time
-        logging.info(f"Summary generated successfully in {elapsed_time:.2f} seconds.")
     except Exception as e:
-        logging.error(f"Failed to generate summary: {e}")
+        print(f"Error summarizing text: {e}")
         sys.exit(1)
 
     return response.choices[0].message.content
 
 def save_corrected_transcript(output_file_path, corrected_text):
-    """Save the corrected transcript to a file."""
-    logging.info(f"Saving corrected transcript to file: {output_file_path}")
     try:
-        with open(output_file_path, 'w') as file:
+        with open(output_file_path, 'a') as file:  # Open file in append mode
             file.write(corrected_text)
-        logging.info(f"Corrected transcript saved successfully at {output_file_path}.")
     except Exception as e:
-        logging.error(f"Failed to save corrected transcript: {e}")
+        print(f"Error saving corrected transcript: {e}")
         sys.exit(1)
 
 def main(json_file_path):
-    start_time = time.time()
-
-    # Ensure the OpenAI API key is set in the environment
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
-        logging.error("Error: OPENAI_API_KEY environment variable not set.")
+        print("API key not found. Please set the OPENAI_API_KEY environment variable.")
         sys.exit(1)
 
-    # Initialize the OpenAI client
     client = OpenAI(
-        api_key=api_key  # Explicitly passing the API key, even though it's the default
+        api_key=api_key
     )
 
-    logging.info("OpenAI client initialized.")
-
-    # Define the system prompt
-    system_prompt = (
-        "You are a helpful assistant that helps transcribe DnD sessions. Your task is to correct spelling discrepancies in the transcribed text. Only add necessary punctuation such as periods, commas, and capitalization, and use only the context provided. Include timestamps and newlines. The player characters are Senzorin, Arche, Saziver, and Zel'eon. The system is DnD 5e. The setting is a contemporary fantasy world, and the session is set in a city called Ilrinia. The following words must be spelled correctly: Ilrinia, Senzorin, Arche, Saziver, Zel'eon, and Arcana."
-    )
-
-    # Load the transcript from the provided JSON file
+    print("Loading transcript from JSON...")
+    start_time = time.time()
     transcript_text = load_transcript_from_json(json_file_path)
+    load_time = time.time() - start_time
+    print(f"Transcript loaded in {load_time:.2f} seconds.")
 
-    # Initialize the encoding for tokenization
-    encoding = tiktoken.encoding_for_model("gpt-4o")
+    encoding = tiktoken.encoding_for_model("gpt-4")
+    max_tokens = 1000
+    overlap = 200  # Adjust overlap as needed
 
-    # Define the max tokens per chunk (adjusted for some buffer to avoid cutting off mid-sentence)
-    max_tokens = 10000
+    print("Chunking transcript text...")
+    start_time = time.time()
+    chunks = chunk_text(transcript_text, max_tokens, encoding, overlap)
+    chunking_time = time.time() - start_time
+    print(f"Text chunked into {len(chunks)} chunks in {chunking_time:.2f} seconds.")
 
-    # Chunk the transcript text
-    chunks = chunk_text(transcript_text, max_tokens, encoding)
-    
-    corrected_text = ""
-    context = ""
-    
-    # Process each chunk
-    for i, chunk in enumerate(chunks):
-        logging.info(f"Processing chunk {i + 1}/{len(chunks)}...")
-        
-        # Generate the corrected text for this chunk
-        corrected_chunk = generate_corrected_transcript(client, 0, system_prompt, chunk, context)
-        
-        # Append to the overall corrected text
-        corrected_text += corrected_chunk + "\n"
-        
-        # Summarize the corrected text so far
-        context = summarize_text(client, 0, system_prompt, corrected_text)
-
-    # Determine the output file path
     output_file_path = os.path.splitext(json_file_path)[0] + "_corrected.txt"
+    
+    # Clear the output file before appending new content
+    open(output_file_path, 'w').close()
 
-    # Save the corrected transcript to a file
-    save_corrected_transcript(output_file_path, corrected_text)
+    context = ""
+    total_chunks = len(chunks)
 
-    # Calculate total execution time
-    total_time = time.time() - start_time
-    logging.info(f"Total execution time: {total_time:.2f} seconds.")
+    print("Starting transcript correction...")
+    total_start_time = time.time()
+
+    for i, chunk in enumerate(chunks):
+        print(f"Processing chunk {i+1}/{total_chunks}...")
+
+        start_time = time.time()
+        corrected_chunk = generate_corrected_transcript(client, chunk, context)
+        correction_time = time.time() - start_time
+        print(f"Chunk {i+1} corrected in {correction_time:.2f} seconds.")
+
+        start_time = time.time()
+        save_corrected_transcript(output_file_path, corrected_chunk + "\n")
+        save_time = time.time() - start_time
+        print(f"Chunk {i+1} saved in {save_time:.2f} seconds.")
+
+        context = summarize_text(client, corrected_chunk)
+        print(f"Summary of transcript so far: {context}")
+
+    total_time = time.time() - total_start_time
+    print(f"Transcript correction completed in {total_time:.2f} seconds.")
+    print(f"Corrected transcript saved to {output_file_path}")
 
 if __name__ == "__main__":
-    # Ensure the script is called with a JSON file argument
     if len(sys.argv) != 2:
-        logging.error("Usage: python correct_transcript.py <path_to_json_file>")
+        print("Usage: python script.py <json_file_path>")
         sys.exit(1)
     
-    # Get the JSON file path from the command line argument
     json_file_path = sys.argv[1]
-    
-    logging.info("Script started.")
-    logging.info(f"Processing file: {json_file_path}")
-    
-    # Run the main function
     main(json_file_path)
-    
-    logging.info("Script finished.")
