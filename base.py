@@ -133,7 +133,7 @@ def post_process_transcript(text):
     processed_lines.append("")
     return "\n".join(processed_lines)
 
-def main(json_file_path, model_name, transcript_context):
+def main(json_file_path, model_name, transcript_context, chunk_size):
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         print("API key not found. Please set the OPENAI_API_KEY environment variable.")
@@ -147,7 +147,7 @@ def main(json_file_path, model_name, transcript_context):
     print(f"Transcript loaded in {load_time:.2f} seconds.")
 
     encoding = tiktoken.encoding_for_model(model_name)
-    max_tokens = 1000
+    max_tokens = chunk_size
     overlap = 0  # Adjust overlap as needed
 
     start_time = time.time()
@@ -179,7 +179,7 @@ def main(json_file_path, model_name, transcript_context):
     
     try:
         for i, chunk in enumerate(chunks):
-            print(f"Processing chunk {i+1}/{total_chunks}...")
+            start_time = time.time()
 
             corrected_chunk, tokens_used = generate_corrected_transcript(client, model_name, system_prompt, chunk, context, encoding)
             cumulative_tokens += tokens_used
@@ -189,7 +189,9 @@ def main(json_file_path, model_name, transcript_context):
             context = summary + "\n" + corrected_chunk
             summary, tokens_used = summarize_text(client, model_name, context, encoding)
             
-            cumulative_tokens += tokens_used  # Update cumulative token counter
+            cumulative_tokens += tokens_used
+
+            print(f"Processed chunk {i+1}/{total_chunks} in {time.time() - total_start_time:.2f} seconds.")
         transcriptCompleted = True
     except KeyboardInterrupt:
         print("\nProcess interrupted by user.")
@@ -209,6 +211,7 @@ if __name__ == "__main__":
     parser.add_argument("--json_path", type=str, required=True, help="Path to the transcript JSON file.")
     parser.add_argument("--model_name", type=str, default="gpt-4o-mini", help="Name of the OpenAI model to use (e.g., 'gpt-4'). Default is gpt-4o-mini.")
     parser.add_argument("--info_path", type=str, default="", help="Path to the text file containing the transcript description and other relevant information. Default is an empty string.")
+    parser.add_argument("--chunk_size", type=int, default=2000, help="Size (in tokens) of the chunks to split the text into for passing to the API. Default is 2000 tokens.")
 
     args = parser.parse_args()
 
@@ -222,6 +225,7 @@ if __name__ == "__main__":
     main(
         json_file_path=args.json_path,
         model_name=args.model_name,
-        transcript_context=transcript_context
+        transcript_context=transcript_context,
+        chunk_size=args.chunk_size
     )
 
