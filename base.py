@@ -2,6 +2,7 @@ import json
 import os
 import sys
 import time
+import argparse
 import tiktoken
 from openai import OpenAI
 from datetime import timedelta
@@ -51,12 +52,12 @@ def count_tokens(encoding, messages):
         total_tokens += len(encoding.encode(message['content']))
     return total_tokens
 
-def generate_corrected_transcript(client, model_name, transcript_text, context="", encoding=None):
+def generate_corrected_transcript(client, model_name, system_prompt, transcript_text, context="", encoding=None):
     try:
         messages = [
             {
                 "role": "system",
-                "content": "You are a helpful assistant. Your task is to correct formatting and spelling discrepancies in the transcribed text. Only add necessary punctuation such as periods, commas, and capitalization, and use only the context provided. Each line should have the format [HH:MM:SS - HH:MM:SS] text."
+                "content": system_prompt
             }
         ]
         if context:
@@ -72,7 +73,7 @@ def generate_corrected_transcript(client, model_name, transcript_text, context="
         # Count tokens before making the API call
         if encoding:
             total_tokens = count_tokens(encoding, messages)
-            # print(f"Total tokens (context + generated) for this call: {total_tokens}")
+            #print(f"Total tokens (context + generated) for this call: {total_tokens}")
         
         response = client.chat.completions.create(
             model=model_name,
@@ -84,6 +85,7 @@ def generate_corrected_transcript(client, model_name, transcript_text, context="
         sys.exit(1)
 
     return response.choices[0].message.content, total_tokens
+
 
 def summarize_text(client, model_name, text, encoding=None):
     try:
@@ -131,27 +133,23 @@ def post_process_transcript(text):
     processed_lines.append("")
     return "\n".join(processed_lines)
 
-def main(json_file_path, model_name):
+def main(json_file_path, model_name, transcript_context):
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         print("API key not found. Please set the OPENAI_API_KEY environment variable.")
         sys.exit(1)
 
-    client = OpenAI(
-        api_key=api_key
-    )
+    client = OpenAI(api_key=api_key)
 
-    print("Loading transcript from JSON...")
     start_time = time.time()
     transcript_text = load_transcript_from_json(json_file_path)
     load_time = time.time() - start_time
     print(f"Transcript loaded in {load_time:.2f} seconds.")
 
-    encoding = tiktoken.encoding_for_model("gpt-4")
+    encoding = tiktoken.encoding_for_model(model_name)
     max_tokens = 1000
-    overlap = 200  # Adjust overlap as needed
+    overlap = 0  # Adjust overlap as needed
 
-    print("Chunking transcript text...")
     start_time = time.time()
     chunks = chunk_text(transcript_text, max_tokens, encoding, overlap)
     chunking_time = time.time() - start_time
@@ -167,39 +165,63 @@ def main(json_file_path, model_name):
     total_chunks = len(chunks)
     cumulative_tokens = 0  # Initialize cumulative token counter
 
-    print("Starting transcript correction...")
+    # Construct the system prompt using the provided words list and transcript description
+    system_prompt = (
+        "You are a helpful assistant tasked with correcting formatting and spelling discrepancies in the provided transcribed text. "
+        "Your corrections should include only necessary punctuation, such as periods and commas, and appropriate capitalization. "
+        "Ensure that each line maintains the format [HH:MM:SS - HH:MM:SS] text. "
+        "Refer to the following context to accurately spell names, jargon, and other relevant terms that might appear in the transcript: "
+        f"{transcript_context}"
+    )
+
     total_start_time = time.time()
+    transcriptCompleted = False
+    
+    try:
+        for i, chunk in enumerate(chunks):
+            print(f"Processing chunk {i+1}/{total_chunks}...")
 
-    for i, chunk in enumerate(chunks):
-        print(f"Processing chunk {i+1}/{total_chunks}...")
-
-        start_time = time.time()
-        corrected_chunk, tokens_used = generate_corrected_transcript(client, model_name, chunk, context, encoding)
-        cumulative_tokens += tokens_used  # Update cumulative token counter
-        correction_time = time.time() - start_time
-        print(f"Chunk {i+1} corrected in {correction_time:.2f} seconds.")
-
-        start_time = time.time()
-        save_corrected_transcript(output_file_path, corrected_chunk + "\n")
-        save_time = time.time() - start_time
-        print(f"Chunk {i+1} saved in {save_time:.2f} seconds.")
-
-        # Update context with the summary and the current corrected chunk
-        context = summary + "\n" + corrected_chunk
-        summary, tokens_used = summarize_text(client, model_name, context, encoding)
-        cumulative_tokens += tokens_used  # Update cumulative token counter
-        print(f"Summary of transcript so far: {summary}")
-        print(f"Cumulative tokens used so far: {cumulative_tokens}")
+            corrected_chunk, tokens_used = generate_corrected_transcript(client, model_name, system_prompt, chunk, context, encoding)
+            cumulative_tokens += tokens_used
+            
+            save_corrected_transcript(output_file_path, corrected_chunk + "\n")
+            
+            context = summary + "\n" + corrected_chunk
+            summary, tokens_used = summarize_text(client, model_name, context, encoding)
+            
+            cumulative_tokens += tokens_used  # Update cumulative token counter
+        transcriptCompleted = True
+    except KeyboardInterrupt:
+        print("\nProcess interrupted by user.")
+        transcriptCompleted = False
 
     total_time = time.time() - total_start_time
-    print(f"Transcript correction completed in {total_time:.2f} seconds.")
+    if (transcriptCompleted):
+        print(f"Transcript correction completed in {total_time:.2f} seconds.")
+    else:
+        print(f"Transcript correction interrupted after {total_time:.2f} seconds.")
+    print(f"Cumulative tokens used so far: {cumulative_tokens}")
     print(f"Corrected transcript saved to {output_file_path}")
+    print(f"Summary: {summary}")
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        print("Usage: python script.py <json_file_path> <model_name>")
-        sys.exit(1)
-    
-    json_file_path = sys.argv[1]
-    model_name = sys.argv[2]
-    main(json_file_path, model_name)
+    parser = argparse.ArgumentParser(description="Process and correct transcript using GPT-4 or GPT-3.5-Turbo.")
+    parser.add_argument("--json_path", type=str, required=True, help="Path to the transcript JSON file.")
+    parser.add_argument("--model_name", type=str, default="gpt-4o-mini", help="Name of the OpenAI model to use (e.g., 'gpt-4'). Default is gpt-4o-mini.")
+    parser.add_argument("--info_path", type=str, default="", help="Path to the text file containing the transcript description and other relevant information. Default is an empty string.")
+
+    args = parser.parse_args()
+
+    # Read the content of the information file if provided
+    if args.info_path:
+        with open(args.info_path, 'r') as file:
+            transcript_context = file.read().strip()
+    else:
+        transcript_context = ""
+
+    main(
+        json_file_path=args.json_path,
+        model_name=args.model_name,
+        transcript_context=transcript_context
+    )
+
