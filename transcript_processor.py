@@ -70,51 +70,25 @@ class TranscriptProcessor:
         )
 
         context = ""
-        chunk_times = []
-        total_start_time = time.time()
-
-        results = [None] * num_chunks  # List to store results in order
+        summary = ""
 
         try:
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                # Submit all chunks to the executor
-                future_to_index = {
-                    executor.submit(self.process_chunk, chunk, system_prompt, summary_prompt, context, i): i
-                    for i, chunk in enumerate(chunks)
-                }
+            for i, chunk in enumerate(chunks):
+                start_time = time.time()
+                chunk_tokens = 0
+                corrected_chunk, tokens_used = self.process_text_with_prompt(
+                    system_prompt, "", "Correct the following transcript: ", chunk
+                )
+                chunk_tokens += tokens_used
+                self.save_corrected_transcript(output_file_path, corrected_chunk)
 
-                for future in concurrent.futures.as_completed(future_to_index):
-                    index = future_to_index[future]
-                    start_time = time.time()
-
-                    try:
-                        result_index, corrected_chunk, summary, tokens_used = future.result()
-                        chunk_tokens = tokens_used
-
-                        # Update context with new summary and corrected chunk
-                        context = summary + "\n" + corrected_chunk
-
-                        # Store result in the correct index
-                        results[result_index] = corrected_chunk
-
-                        elapsed_time = time.time() - start_time
-                        chunk_times.append(elapsed_time)
-                        
-                        average_time_per_chunk = sum(chunk_times) / len(chunk_times)
-                        remaining_chunks = len(chunks) - (index + 1)
-                        remaining_time = average_time_per_chunk * remaining_chunks
-                        
-                        print(f"Processed chunk {index+1}/{num_chunks} using {chunk_tokens} tokens in {format_timestamp(elapsed_time)}s. Time elapsed: {format_timestamp(time.time() - total_start_time)} Estimated time remaining: {format_timestamp(remaining_time)}")
-                    
-                    except Exception as exc:
-                        print(f"Chunk {index+1} generated an exception: {exc}")
-
-            # Write results to file in the correct order
-            with open(output_file_path, 'a') as file:
-                for corrected_chunk in results:
-                    if corrected_chunk:
-                        file.write(post_process_transcript(corrected_chunk))
-
+                context = summary + "\n" + corrected_chunk
+                summary, tokens_used = self.process_text_with_prompt(
+                    summary_prompt, "", "Summarize the following text: ", context
+                )
+                chunk_tokens += tokens_used
+                
+                print(f"Processed chunk {i+1}/{len(chunks)} using {chunk_tokens} tokens in {round(time.time() - start_time, 2)}s.")
             print(f"Transcript correction completed.")
         except KeyboardInterrupt:
             print(f"Transcript correction interrupted.")
